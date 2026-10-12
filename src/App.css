@@ -21,6 +21,15 @@
   position: relative;
 }
 
+/* Esri's World Dark Gray is a mid grey (land #474749); CARTO's Dark Matter,
+   which this map used before CARTO started requiring an API key, was close
+   to black. Dimming just the base canvas gets that look back for free --
+   the separate labels/roads reference layer is untouched so street names
+   stay readable. */
+.basemap-base {
+  filter: brightness(0.45);
+}
+
 .logo-overlay {
   position: absolute;
   top: 16px;
@@ -80,7 +89,27 @@
   display: flex;
   flex-direction: column;
   border-left: 1px solid #2e303a;
-  overflow: hidden;
+  /* One scroll for the whole sidebar. The employer and training lists used
+     to be separate flex: 1 scroll boxes, which split whatever height the
+     filters left over 50/50 -- a filtered-to-empty training list held half
+     of it as a blank gap, and with a few filters expanded each list got a
+     sliver. Now filters, training providers and employers scroll as one
+     page. (Selecting a pin still scrolls its row into view: scrollIntoView
+     works on whichever ancestor scrolls.) */
+  overflow-y: auto;
+}
+
+.sidebar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar::-webkit-scrollbar-track {
+  background: #1a1b22;
+}
+
+.sidebar::-webkit-scrollbar-thumb {
+  background: #3a3c4a;
+  border-radius: 2px;
 }
 
 .sidebar-header {
@@ -103,21 +132,7 @@
 }
 
 .employer-list {
-  overflow-y: auto;
-  flex: 1;
-}
-
-.employer-list::-webkit-scrollbar {
-  width: 4px;
-}
-
-.employer-list::-webkit-scrollbar-track {
-  background: #1a1b22;
-}
-
-.employer-list::-webkit-scrollbar-thumb {
-  background: #3a3c4a;
-  border-radius: 2px;
+  flex-shrink: 0;
 }
 
 .employer-item {

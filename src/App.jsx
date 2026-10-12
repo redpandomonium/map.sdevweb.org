@@ -67,6 +67,14 @@ function distanceMiles(lat1, lng1, lat2, lng2) {
 
 const ZIP_RADIUS_OPTIONS = [5, 10, 25, 50]
 
+// Esri's World Dark Gray tiles stop at zoom 16 -- anything deeper comes back
+// as a grey "Map data not yet available" placeholder (checked 2026-09-30).
+// Rather than hard-stopping at 16, the map allows two more levels and Leaflet
+// stretches the z16 tiles to fill them (maxNativeZoom), so crowded pins can
+// still be pulled apart without ever requesting a tile that doesn't exist.
+const ESRI_MAX_NATIVE_ZOOM = 16
+const MAP_MAX_ZOOM = 18
+
 // Fill weight steps down as you move away from Southwest Detroit.
 const ZONE_STYLE = {
   'Southwest Detroit': { fillOpacity: 0.9, weight: 1, dash: null },
@@ -722,6 +730,7 @@ function App() {
           center={[42.2955, -83.1114]}
           zoom={11}
           minZoom={10}
+          maxZoom={MAP_MAX_ZOOM}
           maxBounds={[[41.95, -84.0], [42.8, -82.65]]}
           maxBoundsViscosity={1.0}
           zoomControl={false}
@@ -732,13 +741,20 @@ function App() {
               watermark for anonymous requests, so this uses Esri's free,
               no-key World Dark Gray basemap instead (base canvas + a
               transparent reference layer for labels/roads, matching how
-              Esri splits this particular style in two). */}
+              Esri splits this particular style in two). The base layer is
+              darkened in CSS (.basemap-base) to get back the near-black look
+              the CARTO tiles had; labels are left at full brightness. */}
           <TileLayer
             url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
             attribution='&copy; <a href="https://www.esri.com/">Esri</a>'
+            className="basemap-base"
+            maxNativeZoom={ESRI_MAX_NATIVE_ZOOM}
+            maxZoom={MAP_MAX_ZOOM}
           />
           <TileLayer
             url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}"
+            maxNativeZoom={ESRI_MAX_NATIVE_ZOOM}
+            maxZoom={MAP_MAX_ZOOM}
           />
           <FlyToTarget target={selected} active={mapActive} />
           <TransitLayer data={transitData} shownAgencies={shownAgencies} isMobile={isMobile} />
