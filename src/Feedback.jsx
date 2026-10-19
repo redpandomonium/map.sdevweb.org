@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
 // Responses go wherever the form is set to send them (a linked Google Sheet).
 // While this is empty the whole feedback UI renders nothing, so the live site
 // never shows a button that opens onto a broken form.
-export const FEEDBACK_FORM_URL = ''
+export const FEEDBACK_FORM_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSdBPjev3aBqlImkuusR67fGTuLN-yGOVBIaNi9IJv2yuZ0img/viewform'
 
 function embedUrl(url) {
   try {
