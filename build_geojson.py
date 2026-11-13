@@ -11,12 +11,24 @@ MASTER_XLSX = "employers_master.xlsx"
 SHEET_NAME = "Employers"
 OUTPUT_PATHS = ["employers_geocoded.geojson", "public/employers_geocoded.geojson"]
 
+# This file is served publicly (map.sdevweb.org/employers_geocoded.geojson), so
+# PROPERTY_COLUMNS is an allowlist: a spreadsheet column reaches the website
+# only if it is named here. Adding a column to employers_master.xlsx never
+# publishes it by accident.
+#
+# PRIVATE_COLUMNS are the ones that were published until 2026-10-19 and then
+# deliberately removed: a named person's phone/email and internal notes. They
+# stay in the spreadsheet for SDEV's own outreach. main() refuses to run if one
+# is ever added back to the allowlist below.
+PRIVATE_COLUMNS = {
+    "phone", "email", "contact_first", "contact_last", "contact_role", "notes",
+}
+
 PROPERTY_COLUMNS = [
     "company", "operational_status", "business_type", "category", "sub_category",
     "vehicle_type", "fleet_size", "full_address", "street_address", "city", "state",
-    "zip", "phone", "email", "website", "contact_first", "contact_last",
-    "contact_role", "open_job_count", "job_titles", "job_types",
-    "apply_urls", "latest_scrape", "notes", "geocode_source",
+    "zip", "website", "open_job_count", "job_titles", "job_types",
+    "apply_urls", "latest_scrape", "geocode_source",
     # Scope resolution (added 2026-08-04). These drive the corridor filter in
     # App.jsx. They must stay in this list or a rebuild silently drops them
     # from the map and every employer falls back to "unclassified".
@@ -77,6 +89,13 @@ def zone_for(zip_code):
 
 
 def main():
+    leaked = PRIVATE_COLUMNS.intersection(PROPERTY_COLUMNS)
+    if leaked:
+        raise SystemExit(
+            f"Refusing to build: {sorted(leaked)} are private columns and must "
+            "not be in PROPERTY_COLUMNS (see the note above it)."
+        )
+
     wb = openpyxl.load_workbook(MASTER_XLSX, read_only=True)
     ws = wb[SHEET_NAME]
     rows = ws.iter_rows(values_only=True)

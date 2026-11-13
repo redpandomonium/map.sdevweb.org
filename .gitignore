@@ -28,3 +28,16 @@ transit_cache
 
 # wrangler dev local state
 .wrangler
+
+# Private working data -- this repo is public. The master spreadsheet (and
+# every backup or export of it) holds employer contact names, phone numbers
+# and emails that were removed from the published map on 2026-10-19. They stay
+# on disk for the scraper pipeline but must never be committed here. The only
+# employer data that belongs in this repo is employers_geocoded.geojson, which
+# build_geojson.py writes from an allowlist of public columns.
+employers_master.xlsx
+employers_master.backup_*.xlsx
+~$*.xlsx
+backups/
+companies.json
+__pycache__/
