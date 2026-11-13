@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from 'react'
 import { Pane, Polyline, CircleMarker, Tooltip, Popup, useMap, useMapEvents } from 'react-leaflet'
 import { TRANSIT_AGENCIES } from './transitAgencies'
+import { useI18n } from './i18n'
 
 // Below this zoom ~10,000 stops would carpet the map and bury the employer
 // pins, so stops only appear once zoomed into a few neighbourhoods at most.
@@ -13,6 +14,7 @@ function InfoLabel({ isMobile, children }) {
 }
 
 const RouteLine = memo(function RouteLine({ positions, agency, route, name, isRail, isMobile }) {
+  const { t } = useI18n()
   const meta = TRANSIT_AGENCIES[agency]
   const weight = isRail ? 4 : 2
   const opacity = isRail ? 0.9 : 0.4
@@ -26,7 +28,7 @@ const RouteLine = memo(function RouteLine({ positions, agency, route, name, isRa
       }}
     >
       <InfoLabel isMobile={isMobile}>
-        <strong>{meta.label}{route && route !== name ? ` ${route}` : ''}</strong>
+        <strong>{t(`transit.${agency}`)}{route && route !== name ? ` ${route}` : ''}</strong>
         {name && <> · {name}</>}
       </InfoLabel>
     </Polyline>
@@ -36,6 +38,7 @@ const RouteLine = memo(function RouteLine({ positions, agency, route, name, isRa
 // Tracks zoom + viewport so only stops actually on screen are mounted --
 // thousands of SVG circles, even invisible ones, make panning stutter.
 function VisibleStops({ stops, shownAgencies, isMobile }) {
+  const { t } = useI18n()
   const map = useMap()
   const [view, setView] = useState(() => ({ zoom: map.getZoom(), bounds: map.getBounds() }))
   // moveend also fires at the end of every zoom, so one handler covers both.
@@ -56,7 +59,7 @@ function VisibleStops({ stops, shownAgencies, isMobile }) {
     >
       <InfoLabel isMobile={isMobile}>
         <strong>{s.name}</strong><br />
-        {TRANSIT_AGENCIES[s.agency].label}: {s.routes.join(', ')}
+        {t(`transit.${s.agency}`)}: {s.routes.join(', ')}
       </InfoLabel>
     </CircleMarker>
   ))

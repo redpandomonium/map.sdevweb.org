@@ -1,24 +1,23 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { MapContainer, TileLayer, CircleMarker, Marker, Tooltip, useMap, ZoomControl } from 'react-leaflet'
+import { MapContainer, TileLayer, CircleMarker, Marker, Popup, Tooltip, useMap, ZoomControl } from 'react-leaflet'
 import { CATEGORY_COLORS, UNCATEGORISED_LABEL, colorForCategory, TRAINING_PROVIDER_COLOR } from './categoryColors'
 import useIsMobile from './useIsMobile'
 import TransitLayer from './TransitLayer'
 import { TRANSIT_AGENCIES, TRANSIT_ORDER } from './transitAgencies'
 import FeedbackButton from './Feedback'
+import LanguageToggle from './LanguageToggle'
+import { useI18n } from './i18n'
+import { buildSearchTest } from './searchSynonyms'
 import './App.css'
 
 // Zones are geographic, not judgements about an employer. Everything stays on
 // the map; the styling just makes Southwest Detroit read first.
-const ZONE_META = {
-  'Southwest Detroit': { hint: 'Mexicantown, Springwells, Corktown, Boynton and Oakwood Heights' },
-  'Around Southwest Detroit': { hint: 'River Rouge, Ecorse, Melvindale, Lincoln Park, Wyandotte, Riverview, Trenton and Dearborn' },
-  'Detroit': { hint: 'Elsewhere in the city of Detroit' },
-  'Outside the area': { hint: 'Outside Detroit and the surrounding communities' },
-}
+// The wording for each zone (and its longer hint) lives in strings.js, keyed by
+// these same values -- label(zone) / hint(zone).
 const ZONE_ORDER = ['Southwest Detroit', 'Around Southwest Detroit', 'Detroit', 'Outside the area']
-const zoneOf = (properties) => (ZONE_META[properties.zone] ? properties.zone : 'Detroit')
+const zoneOf = (properties) => (ZONE_ORDER.includes(properties.zone) ? properties.zone : 'Detroit')
 const zoneClass = (zone) => 'zone-' + zone.toLowerCase().replace(/\s+/g, '-')
 const categoryOf = (properties) => properties.category || UNCATEGORISED_LABEL
 
@@ -43,14 +42,28 @@ const TRAINING_CATEGORIES = ['Trade/vocational school', 'Community organization'
 // styled differently below -- it is a pipeline gap, not a fourth rung on the
 // no-degree -> degree scale the other three represent.
 const EDU_ORDER = ['No degree required', 'Training or certificate', 'College degree', 'Unclassified']
-const EDU_META = {
-  'No degree required': { hint: 'Hiring for at least one role needing no diploma or certificate' },
-  'Training or certificate': { hint: 'Lowest opening needs a certificate, licence or trade credential' },
-  'College degree': { hint: 'All current openings ask for a degree' },
-  'Unclassified': { hint: 'Has open jobs, but none have an education label yet' },
-}
 const eduClass = (tier) => 'edu-' + tier.toLowerCase().replace(/[^a-z]+/g, '-').replace(/-$/, '')
 const educationOf = (properties) => properties.lowest_education || null
+
+// "Hiring" means the last scrape found at least one open posting -- the same
+// number the sidebar's job badge shows. It drives the marker size on the map
+// (see HIRING_STYLE), the popup's status line and the "Hiring now only" toggle.
+const isHiring = (properties) => (properties.open_job_count || 0) > 0
+
+// Search is case- and accent-insensitive ("pena" finds "Peña"), and only
+// kicks in at two characters so a single keystroke doesn't match everything.
+const SEARCH_MIN_CHARS = 2
+const normalise = (text) =>
+  (text || '').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+const splitList = (value) => (value ? value.split(' | ') : [])
+const isWebUrl = (url) => Boolean(url) && /^https?:\/\//.test(url)
+// "Welding,CDL/Truck Driving" -> "Welding, CDL/Truck Driving" (the training
+// data has no space after its commas, which also stops long lists wrapping).
+const spaceCommas = (text) => (text || '').replace(/,(?=\S)/g, ', ')
+// education_confidence arrives as an English sentence, "90% from posting text
+// (9/10)". Pulled apart here so it can be re-said in the current language;
+// anything in an unexpected shape is shown as it came.
+const CONFIDENCE_PATTERN = /^(\d+)% from posting text \((.+)\)$/
 
 // Great-circle distance in miles -- used by the ZIP filter to rank/limit
 // employers by how far they are from the ZIP the visitor typed in.
@@ -83,6 +96,17 @@ const ZONE_STYLE = {
   'Outside the area': { fillOpacity: 0, weight: 1.5, dash: '3 3' },
 }
 
+// Hiring status is carried by SIZE, because fill weight (above) and hue
+// (category) are both already spoken for: an employer with open jobs gets the
+// full-size dot, one with none gets a smaller, fainter one. So a glance at
+// the map answers "who is hiring" without opening anything, and it survives
+// the zone styling -- an "Outside the area" employer is still a dashed ring
+// either way, just a large or a small one.
+const HIRING_STYLE = {
+  hiring: { radius: 8, fade: 1 },
+  notHiring: { radius: 5, fade: 0.5 },
+}
+
 // A pin, not a circle, so the two datasets are unambiguous on the map even
 // before a viewer reads the legend -- see the note on TRAINING_PROVIDER_COLOR
 // in categoryColors.js. Built as a function rather than a module-level
@@ -98,53 +122,152 @@ function trainingIcon(isActive) {
   })
 }
 
-// Leaflet's non-permanent <Tooltip> opens on click but only closes on
-// mouseout (no such event on touch), so a tap on mobile leaves it stuck open
-// with nothing to dismiss it. Rather than track "which tooltip is open" and
-// patch close behavior, it's suppressed entirely on mobile -- a tap already
-// calls onSelect, which surfaces the same info via the sidebar's List view.
-const TrainingMarker = memo(function TrainingMarker({ lat, lng, provider, address, category, credential_focus, cost_notes, isActive, isMobile, onSelect }) {
+// Hover tooltips have no touch equivalent (Leaflet only closes one on
+// mouseout), so the tooltip is desktop-only and carries just the name. The
+// full profile lives in a click/tap <Popup>, which works the same on both and
+// has its own close button.
+//
+// Opening is driven two ways: Leaflet opens the popup itself when the marker
+// is clicked, and this hook opens it when the employer is selected from the
+// sidebar list instead (isActive flips without a click on the marker).
+// `mapActive` is false while the map is hidden behind the mobile List tab --
+// a popup opened on a zero-size map container lands in the wrong place, so
+// this waits and catches up when the map is shown again, the same way
+// FlyToTarget does.
+function useOpenPopupWhenActive(isActive, mapActive) {
+  const layerRef = useRef(null)
+  useEffect(() => {
+    if (isActive && mapActive) layerRef.current?.openPopup()
+  }, [isActive, mapActive])
+  return layerRef
+}
+
+// autoPan is off because selecting already flies the map to the marker
+// (FlyToTarget) -- two competing pans make the map lurch. The offset lifts
+// the popup's tip clear of the marker (Leaflet's default points it at the
+// centre, which hides the top half of the selected, 11px-radius dot).
+const POPUP_PROPS = { autoPan: false, maxWidth: 280, minWidth: 200, offset: [0, -6] }
+
+// Contact names, phone numbers and emails are deliberately NOT here: they
+// were removed from the public data on 2026-10-19 (see PRIVATE_COLUMNS in
+// build_geojson.py). The routes to an employer this shows are its website and
+// the per-job Apply links in the list.
+function EmployerPopup({ properties, zone, education, isMobile, onShowInList }) {
+  const { t, label, phrases } = useI18n()
+  const { company, full_address, category, sub_category, business_type, open_job_count, website } = properties
+  const hiring = isHiring(properties)
   return (
-    <Marker position={[lat, lng]} icon={trainingIcon(isActive)} eventHandlers={{ click: onSelect }}>
-      {!isMobile && (
-        <Tooltip>
-          <strong>{provider}</strong><br />
-          {address}<br />
-          {category}<br />
-          {credential_focus}<br />
-          {cost_notes && <em>{cost_notes}</em>}
-        </Tooltip>
+    <div className="map-popup">
+      <div className="map-popup-title">{company}</div>
+      <div className={`map-popup-status${hiring ? ' hiring' : ''}`}>
+        {hiring ? t('hiring.nowWithCount', { count: open_job_count }) : t('hiring.noneLong')}
+      </div>
+      <dl className="map-popup-facts">
+        <dt>{t('popup.industry')}</dt>
+        <dd>
+          <span className="category-swatch" style={{ backgroundColor: colorForCategory(category) }} />
+          {label(category || UNCATEGORISED_LABEL)}{sub_category ? ` · ${label(sub_category)}` : ''}
+        </dd>
+        {business_type && (<><dt>{t('popup.business')}</dt><dd>{phrases(business_type.trim())}</dd></>)}
+        {full_address && (<><dt>{t('popup.address')}</dt><dd>{full_address}</dd></>)}
+        <dt>{t('popup.area')}</dt>
+        <dd>{label(zone)}</dd>
+        {hiring && education && (<><dt>{t('popup.education')}</dt><dd>{label(education)}</dd></>)}
+      </dl>
+      <div className="map-popup-actions">
+        {hiring && (
+          <button type="button" className="map-popup-button" onClick={onShowInList}>
+            {isMobile ? t('popup.seeJobsInList') : t('popup.seeJobs')}
+          </button>
+        )}
+        {isWebUrl(website) && (
+          <a href={website} target="_blank" rel="noopener noreferrer" className="map-popup-link">
+            {t('popup.website')}&nbsp;&#8599;
+          </a>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function TrainingPopup({ properties }) {
+  const { t, label, phrases } = useI18n()
+  const { provider, address, category, credential_focus, cost_notes, homepage_url, program_page_url } = properties
+  const link = program_page_url || homepage_url
+  return (
+    <div className="map-popup">
+      <div className="map-popup-title">{provider}</div>
+      <div className="map-popup-status training">{t('training.badge')}</div>
+      <dl className="map-popup-facts">
+        <dt>{t('popup.type')}</dt>
+        <dd>
+          <span className="category-swatch training-swatch" style={{ backgroundColor: TRAINING_PROVIDER_COLOR }} />
+          {label(category)}
+        </dd>
+        {address && (<><dt>{t('popup.address')}</dt><dd>{address}</dd></>)}
+        {credential_focus && (<><dt>{t('popup.trainsFor')}</dt><dd>{phrases(spaceCommas(credential_focus))}</dd></>)}
+        {cost_notes && (<><dt>{t('popup.cost')}</dt><dd>{label(cost_notes)}</dd></>)}
+      </dl>
+      {isWebUrl(link) && (
+        <div className="map-popup-actions">
+          <a href={link} target="_blank" rel="noopener noreferrer" className="map-popup-link">
+            {t('training.programmePage')}&nbsp;&#8599;
+          </a>
+        </div>
       )}
+    </div>
+  )
+}
+
+const TrainingMarker = memo(function TrainingMarker({ lat, lng, properties, isActive, isMobile, mapActive, onSelect }) {
+  const markerRef = useOpenPopupWhenActive(isActive, mapActive)
+  return (
+    <Marker ref={markerRef} position={[lat, lng]} icon={trainingIcon(isActive)} eventHandlers={{ click: onSelect }}>
+      {!isMobile && <Tooltip direction="top" offset={[0, -10]}>{properties.provider}</Tooltip>}
+      <Popup {...POPUP_PROPS}>
+        <TrainingPopup properties={properties} />
+      </Popup>
     </Marker>
   )
 })
 
-const EmployerMarker = memo(function EmployerMarker({ lat, lng, company, full_address, category, sub_category, open_job_count, zone, education, isActive, isMobile, onSelect }) {
-  const fill = colorForCategory(category)
+const EmployerMarker = memo(function EmployerMarker({ lat, lng, properties, zone, education, isActive, isMobile, mapActive, onSelect, onShowInList }) {
+  const { t } = useI18n()
+  const markerRef = useOpenPopupWhenActive(isActive, mapActive)
+  const fill = colorForCategory(properties.category)
   const style = ZONE_STYLE[zone]
+  const hiring = isHiring(properties)
+  const { radius, fade } = hiring ? HIRING_STYLE.hiring : HIRING_STYLE.notHiring
   return (
     <CircleMarker
+      ref={markerRef}
       center={[lat, lng]}
-      radius={isActive ? 11 : 8}
+      radius={isActive ? 11 : radius}
       pathOptions={{
         color: isActive ? '#fff' : (style.fillOpacity > 0.5 ? 'rgba(0, 0, 0, 0.35)' : fill),
         fillColor: fill,
-        fillOpacity: isActive ? Math.max(style.fillOpacity, 0.6) : style.fillOpacity,
+        opacity: isActive ? 1 : fade,
+        fillOpacity: isActive ? Math.max(style.fillOpacity, 0.6) : style.fillOpacity * fade,
         weight: isActive ? 2 : style.weight,
         dashArray: style.dash,
       }}
       eventHandlers={{ click: onSelect }}
     >
       {!isMobile && (
-        <Tooltip>
-          <strong>{company}</strong><br />
-          {full_address}<br />
-          {category}{sub_category ? ` · ${sub_category}` : ''}<br />
-          {open_job_count} open job{open_job_count !== 1 ? 's' : ''}<br />
-          {education && <>{education}<br /></>}
-          <em>{zone}</em>
+        <Tooltip direction="top" offset={[0, -6]}>
+          <strong>{properties.company}</strong>
+          {hiring ? t('jobs.open', { count: properties.open_job_count }) : t('hiring.none')}
         </Tooltip>
       )}
+      <Popup {...POPUP_PROPS}>
+        <EmployerPopup
+          properties={properties}
+          zone={zone}
+          education={education}
+          isMobile={isMobile}
+          onShowInList={onShowInList}
+        />
+      </Popup>
     </CircleMarker>
   )
 })
@@ -153,6 +276,7 @@ const EmployerMarker = memo(function EmployerMarker({ lat, lng, company, full_ad
 // listings below the fold. `defaultOpen` only seeds the initial state; each
 // section remembers its own open/closed after that.
 function FilterSection({ title, activeCount, totalCount, defaultOpen = false, children }) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(defaultOpen)
   return (
     <div className="filter-section">
@@ -165,10 +289,73 @@ function FilterSection({ title, activeCount, totalCount, defaultOpen = false, ch
         <span className={`chevron${open ? ' open' : ''}`}>&#9656;</span>
         <span className="filter-section-title">{title}</span>
         {activeCount < totalCount && (
-          <span className="filter-section-badge">{activeCount}/{totalCount} shown</span>
+          <span className="filter-section-badge">{t('filter.shown', { active: activeCount, total: totalCount })}</span>
         )}
       </button>
       {open && <div className="filter-section-body">{children}</div>}
+    </div>
+  )
+}
+
+// The one control that ignores the Category panel: every category starts
+// switched off (see hiddenCategories in App), and a visitor typing "welder"
+// should not also have to guess which of ten categories welders fall under.
+// Area, Education, ZIP and "Hiring now only" still apply on top of a search.
+function SearchBox({ query, onQueryChange, searching, employerCount, trainingCount }) {
+  const { t } = useI18n()
+  const total = employerCount + trainingCount
+  return (
+    <div className="filter-section zip-filter search-filter">
+      <label className="zip-filter-title" htmlFor="map-search">{t('search.title')}</label>
+      <div className="zip-filter-body">
+        <div className="search-input-wrap">
+          <input
+            id="map-search"
+            type="search"
+            enterKeyHint="search"
+            autoComplete="off"
+            placeholder={t('search.placeholder')}
+            value={query}
+            onChange={e => onQueryChange(e.target.value)}
+            className="zip-input search-input"
+          />
+          {query && (
+            <button type="button" className="search-clear" onClick={() => onQueryChange('')} aria-label={t('search.clear')}>
+              &times;
+            </button>
+          )}
+        </div>
+        {searching && (
+          <p className={`zip-status${total === 0 ? ' zip-error' : ''}`} role="status">
+            {total === 0 ? t('search.none') : t('search.matches', { count: total })}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// A filter and the map's key in one place: the toggle narrows the list, and
+// the two dots underneath explain the marker sizes (see HIRING_STYLE) whether
+// or not the toggle is on.
+function HiringFilter({ hiringOnly, onToggle, hiringCount }) {
+  const { t } = useI18n()
+  return (
+    <div className="filter-section hiring-filter">
+      <button
+        type="button"
+        className={`hiring-toggle${hiringOnly ? ' active' : ''}`}
+        aria-pressed={hiringOnly}
+        onClick={onToggle}
+      >
+        <span className="hiring-toggle-box" aria-hidden="true">{hiringOnly ? '\u2713' : ''}</span>
+        <span className="scope-label">{t('hiring.only')}</span>
+        <span className="scope-count">{hiringCount}</span>
+      </button>
+      <div className="map-key">
+        <span className="map-key-item"><span className="map-key-dot hiring" />{t('hiring.now')}</span>
+        <span className="map-key-item"><span className="map-key-dot not-hiring" />{t('hiring.none')}</span>
+      </div>
     </div>
   )
 }
@@ -180,16 +367,18 @@ function FilterSection({ title, activeCount, totalCount, defaultOpen = false, ch
 // ZIP happens in App itself (see the zip* state/effect there); this just
 // renders whatever status that effect has reached.
 function ZipFilter({ zip, onZipChange, radius, onRadiusChange, status, matchCount }) {
+  const { t } = useI18n()
   return (
     <div className="filter-section zip-filter">
-      <div className="zip-filter-title">Near a ZIP code</div>
+      <label className="zip-filter-title" htmlFor="map-zip">{t('zip.title')}</label>
       <div className="zip-filter-body">
         <input
+          id="map-zip"
           type="text"
           inputMode="numeric"
           autoComplete="postal-code"
           maxLength={5}
-          placeholder="e.g. 48210"
+          placeholder={t('zip.placeholder')}
           value={zip}
           onChange={e => onZipChange(e.target.value.replace(/\D/g, '').slice(0, 5))}
           className="zip-input"
@@ -203,17 +392,15 @@ function ZipFilter({ zip, onZipChange, radius, onRadiusChange, status, matchCoun
                 className={`zip-radius-btn${radius === r ? ' active' : ''}`}
                 onClick={() => onRadiusChange(r)}
               >
-                {r} mi
+                {t('zip.radius', { miles: r })}
               </button>
             ))}
           </div>
         )}
-        {status === 'loading' && <p className="zip-status">Looking up {zip}&hellip;</p>}
-        {status === 'error' && <p className="zip-status zip-error">Couldn&rsquo;t find ZIP {zip}.</p>}
+        {status === 'loading' && <p className="zip-status">{t('zip.loading', { zip })}</p>}
+        {status === 'error' && <p className="zip-status zip-error">{t('zip.error', { zip })}</p>}
         {status === 'ok' && (
-          <p className="zip-status">
-            {matchCount} job{matchCount !== 1 ? 's' : ''} within {radius} mi of {zip}
-          </p>
+          <p className="zip-status">{t('zip.result', { count: matchCount, miles: radius, zip })}</p>
         )}
       </div>
     </div>
@@ -221,10 +408,11 @@ function ZipFilter({ zip, onZipChange, radius, onRadiusChange, status, matchCoun
 }
 
 function ZoneFilter({ counts, hiddenZones, onToggle }) {
+  const { t, label, hint } = useI18n()
   const total = ZONE_ORDER.filter(z => counts[z]).length
   const active = total - hiddenZones.size
   return (
-    <FilterSection title="Area" activeCount={active} totalCount={total}>
+    <FilterSection title={t('filter.area')} activeCount={active} totalCount={total}>
       {ZONE_ORDER.map(zone => {
         const isActive = !hiddenZones.has(zone)
         return (
@@ -233,10 +421,10 @@ function ZoneFilter({ counts, hiddenZones, onToggle }) {
             type="button"
             className={`scope-item ${zoneClass(zone)}${isActive ? '' : ' inactive'}`}
             onClick={() => onToggle(zone)}
-            title={ZONE_META[zone].hint}
+            title={hint(zone)}
           >
             <span className="scope-marker" />
-            <span className="scope-label">{zone}</span>
+            <span className="scope-label">{label(zone)}</span>
             <span className="scope-count">{counts[zone] || 0}</span>
           </button>
         )
@@ -248,11 +436,12 @@ function ZoneFilter({ counts, hiddenZones, onToggle }) {
 // Renders nothing until the education pipeline has been run, so the map is
 // never showing an empty filter for data that does not exist yet.
 function EducationFilter({ counts, hiddenEducation, onToggle }) {
+  const { t, label, hint } = useI18n()
   const present = EDU_ORDER.filter(tier => counts[tier])
   if (!present.length) return null
   const active = present.length - hiddenEducation.size
   return (
-    <FilterSection title="Education Level" activeCount={active} totalCount={present.length}>
+    <FilterSection title={t('filter.education')} activeCount={active} totalCount={present.length}>
       {present.map(tier => {
         const isActive = !hiddenEducation.has(tier)
         return (
@@ -261,14 +450,14 @@ function EducationFilter({ counts, hiddenEducation, onToggle }) {
             type="button"
             className={`scope-item ${eduClass(tier)}${isActive ? '' : ' inactive'}`}
             onClick={() => onToggle(tier)}
-            title={EDU_META[tier].hint}
+            title={hint(tier)}
           >
             {tier === 'Unclassified' ? (
               <span className="unclassified-marker">?</span>
             ) : (
               <span className="edu-bar" />
             )}
-            <span className="scope-label">{tier}</span>
+            <span className="scope-label">{label(tier)}</span>
             <span className="scope-count">{counts[tier]}</span>
           </button>
         )
@@ -283,8 +472,9 @@ function EducationFilter({ counts, hiddenEducation, onToggle }) {
 // of route/stop data isn't even downloaded until the first agency is turned
 // on (see the transit fetch effect in App).
 function TransitFilter({ shownAgencies, onToggle, status }) {
+  const { t } = useI18n()
   return (
-    <FilterSection title="Transit" activeCount={shownAgencies.size} totalCount={TRANSIT_ORDER.length}>
+    <FilterSection title={t('filter.transit')} activeCount={shownAgencies.size} totalCount={TRANSIT_ORDER.length}>
       {TRANSIT_ORDER.map(agency => {
         const meta = TRANSIT_AGENCIES[agency]
         const isActive = shownAgencies.has(agency)
@@ -294,19 +484,19 @@ function TransitFilter({ shownAgencies, onToggle, status }) {
             type="button"
             className={`scope-item${isActive ? '' : ' inactive'}`}
             onClick={() => onToggle(agency)}
-            title={meta.hint}
+            title={t(`transit.${agency}.hint`)}
           >
             <svg className="transit-swatch" width="18" height="6" aria-hidden="true">
               <line x1="0" y1="3" x2="18" y2="3" stroke={meta.color} strokeWidth="2" strokeDasharray={meta.dash || undefined} />
             </svg>
-            <span className="scope-label">{meta.label}</span>
+            <span className="scope-label">{t(`transit.${agency}`)}</span>
           </button>
         )
       })}
-      {status === 'loading' && <p className="transit-note">Loading routes&hellip;</p>}
-      {status === 'error' && <p className="transit-note zip-error">Couldn&rsquo;t load transit data.</p>}
+      {status === 'loading' && <p className="transit-note">{t('transit.loading')}</p>}
+      {status === 'error' && <p className="transit-note zip-error">{t('transit.error')}</p>}
       {status === 'ok' && shownAgencies.size > 0 && (
-        <p className="transit-note">Zoom in close to see stops.</p>
+        <p className="transit-note">{t('transit.zoomHint')}</p>
       )}
     </FilterSection>
   )
@@ -322,12 +512,13 @@ function TransitFilter({ shownAgencies, onToggle, status }) {
 // still read as a different kind of thing from an employer category, per the
 // reasoning in categoryColors.js.
 function CategoryLegend({ categories, counts, hiddenCategories, trainingCategories, onToggle, onToggleAll }) {
+  const { t, label } = useI18n()
   const active = categories.length - hiddenCategories.size
   const allActive = active === categories.length
   return (
-    <FilterSection title="Category" activeCount={active} totalCount={categories.length}>
+    <FilterSection title={t('filter.category')} activeCount={active} totalCount={categories.length}>
       <button type="button" className="category-select-all" onClick={() => onToggleAll(!allActive)}>
-        {allActive ? 'Clear all' : 'Select all'}
+        {allActive ? t('filter.clearAll') : t('filter.selectAll')}
       </button>
       <div className="category-legend">
         {categories.map(category => {
@@ -344,7 +535,7 @@ function CategoryLegend({ categories, counts, hiddenCategories, trainingCategori
                 className={`category-swatch${isTraining ? ' training-swatch' : ''}`}
                 style={{ backgroundColor: isTraining ? TRAINING_PROVIDER_COLOR : colorForCategory(category) }}
               />
-              <span className="legend-label">{category}</span>
+              <span className="legend-label">{label(category)}</span>
               <span className="legend-count">{counts[category] || 0}</span>
             </button>
           )
@@ -381,6 +572,7 @@ function FlyToTarget({ target, active }) {
 }
 
 function App() {
+  const { t, label, hint, phrases, lang } = useI18n()
   const [employers, setEmployers] = useState([])
   const [trainingProviders, setTrainingProviders] = useState([])
   // { lat, lng, id, kind } -- kind distinguishes an employer's `company` from
@@ -419,6 +611,11 @@ function App() {
   // (see the effect itself: every setState there happens inside an async
   // fetch callback, never directly in the effect body).
   const [geocodedZip, setGeocodedZip] = useState(null)
+  // Free-text search over employer names and job titles (see SearchBox).
+  const [searchInput, setSearchInput] = useState('')
+  // Off by default so the map still shows every employer, hiring or not --
+  // an employer with nothing posted today is still a place to ask.
+  const [hiringOnly, setHiringOnly] = useState(false)
   // Whether the Training Providers list (separate from the map/marker
   // visibility, which is now just another Category toggle) is expanded.
   // Defaults open -- unlike the filter panels above, this is real content
@@ -508,11 +705,15 @@ function App() {
     return () => { cancelled = true; clearTimeout(timer) }
   }, [zipInput])
 
+  // viewMode is a dependency so that "See jobs in list" in a map popup works
+  // on mobile: the list is display:none while the Map tab is showing, and
+  // scrolling a hidden element does nothing, so this has to run again once
+  // the List tab is actually on screen.
   useEffect(() => {
     if (selected) {
       itemRefs.current[`${selected.kind}:${selected.id}`]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
-  }, [selected])
+  }, [selected, viewMode])
 
   // Derived display/filter state for the ZIP search -- see geocodedZip above
   // for why this is computed here rather than reset via setState in effects.
@@ -526,6 +727,63 @@ function App() {
   // into FlyToTarget below, which needs this to avoid animating a hidden,
   // zero-size map container (see the comment on FlyToTarget itself).
   const mapActive = !isMobile || viewMode === 'map'
+
+  const searchTerm = normalise(searchInput).trim()
+  const searching = searchTerm.length >= SEARCH_MIN_CHARS
+
+  // feature -> { nameMatch, jobIndexes } for every employer the search hits;
+  // null when no search is active. jobIndexes are positions in job_titles, so
+  // the list can show exactly the matching openings (and keep them aligned
+  // with apply_urls / job_educations / job_descriptions, which share those
+  // positions).
+  const employerMatches = useMemo(() => {
+    if (!searching) return null
+    const matchesSearch = buildSearchTest(searchTerm)
+    const matches = new Map()
+    for (const feature of employers) {
+      const { company, category, sub_category, business_type, job_titles } = feature.properties
+      // Category and sub-category are searched in English AND in the current
+      // language, so "transporte" finds the same employers as "transportation".
+      const nameMatch = matchesSearch(normalise(
+        `${company} ${category} ${sub_category} ${business_type} ${label(category)} ${label(sub_category)}`
+      ))
+      const jobIndexes = []
+      splitList(job_titles).forEach((title, j) => {
+        if (matchesSearch(normalise(title))) jobIndexes.push(j)
+      })
+      if (nameMatch || jobIndexes.length) matches.set(feature, { nameMatch, jobIndexes })
+    }
+    return matches
+  }, [employers, searching, searchTerm, label])
+
+  const trainingMatches = useMemo(() => {
+    if (!searching) return null
+    const matchesSearch = buildSearchTest(searchTerm)
+    return new Set(trainingProviders.filter(feature => {
+      const { provider, category, credential_focus, address } = feature.properties
+      return matchesSearch(normalise(
+        `${provider} ${category} ${credential_focus} ${address} ${label(category)} ${phrases(credential_focus)}`
+      ))
+    }))
+  }, [trainingProviders, searching, searchTerm, label, phrases])
+
+  // The most recent scrape date on any employer -- i.e. when the job listings
+  // were last refreshed. Shown in the sidebar header so a visitor (and SDEV
+  // staff) can see at a glance how current the openings are. The date is
+  // built from its parts rather than new Date('2026-10-12'), which is read as
+  // midnight UTC and shows as the previous day in Detroit.
+  const lastUpdated = useMemo(() => {
+    const latest = employers.map(f => f.properties.latest_scrape).filter(Boolean).sort().pop()
+    const parts = /^(\d{4})-(\d{2})-(\d{2})/.exec(latest || '')
+    if (!parts) return null
+    return new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]))
+      .toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+  }, [employers, lang])
+
+  const hiringCount = useMemo(
+    () => employers.filter(feature => isHiring(feature.properties)).length,
+    [employers]
+  )
 
   // Merges both datasets under one shared "category" dimension -- see
   // trainingCategories below for how the legend still tells them apart.
@@ -579,7 +837,12 @@ function App() {
 
   const visibleEmployers = useMemo(() => {
     const filtered = employers.filter(feature =>
-      !hiddenCategories.has(categoryOf(feature.properties)) &&
+      // A search replaces the Category panel rather than stacking on it --
+      // see the comment on SearchBox.
+      (employerMatches
+        ? employerMatches.has(feature)
+        : !hiddenCategories.has(categoryOf(feature.properties))) &&
+      (!hiringOnly || isHiring(feature.properties)) &&
       !hiddenZones.has(zoneOf(feature.properties)) &&
       // An employer with no education data is never filtered out by it.
       !(educationOf(feature.properties) &&
@@ -598,7 +861,7 @@ function App() {
       distanceMiles(activeZipCoords.lat, activeZipCoords.lng, a.geometry.coordinates[1], a.geometry.coordinates[0]) -
       distanceMiles(activeZipCoords.lat, activeZipCoords.lng, b.geometry.coordinates[1], b.geometry.coordinates[0])
     )
-  }, [employers, hiddenCategories, hiddenZones, hiddenEducation, activeZipCoords, zipRadius])
+  }, [employers, employerMatches, hiringOnly, hiddenCategories, hiddenZones, hiddenEducation, activeZipCoords, zipRadius])
 
   // Category and Area both apply here now -- category is shared with
   // employers via categoryOf/hiddenCategories (see trainingCategories
@@ -606,10 +869,12 @@ function App() {
   // is no education dimension for this dataset.
   const visibleTrainingProviders = useMemo(
     () => trainingProviders.filter(feature =>
-      !hiddenCategories.has(categoryOf(feature.properties)) &&
+      (trainingMatches
+        ? trainingMatches.has(feature)
+        : !hiddenCategories.has(categoryOf(feature.properties))) &&
       !hiddenZones.has(zoneOf(feature.properties))
     ),
-    [trainingProviders, hiddenCategories, hiddenZones]
+    [trainingProviders, trainingMatches, hiddenCategories, hiddenZones]
   )
 
   const swVisible = useMemo(
@@ -669,6 +934,14 @@ function App() {
     setSelected({ lat, lng, id: feature.properties.company, kind: 'employer' })
   }
 
+  // The popup's "See jobs" button. Selecting is what expands the employer's
+  // card and scrolls it into view; on mobile the list is a separate tab, so
+  // this also switches to it.
+  const handleShowInList = (feature) => {
+    handleSelect(feature)
+    if (isMobile) setViewMode('list')
+  }
+
   const handleSelectTraining = (feature) => {
     const [lng, lat] = feature.geometry.coordinates
     setSelected({ lat, lng, id: feature.properties.provider, kind: 'training' })
@@ -693,7 +966,7 @@ function App() {
             aria-pressed={viewMode === 'list'}
             onClick={() => setViewMode('list')}
           >
-            List
+            {t('view.list')}
           </button>
           <button
             type="button"
@@ -701,12 +974,16 @@ function App() {
             aria-pressed={viewMode === 'map'}
             onClick={() => setViewMode('map')}
           >
-            Map
+            {t('view.map')}
           </button>
+          {/* The sidebar (and the toggle in its header) is hidden on the Map
+              tab, so on mobile the language switch lives up here where it is
+              always reachable. */}
+          <LanguageToggle compact />
         </div>
       )}
       <div className={`map-wrapper${isMobile && viewMode !== 'map' ? ' hidden-mobile' : ''}`}>
-        <img src="/Small signature logo.png" alt="Logo" className="logo-overlay" />
+        <img src="/Small signature logo.png" alt={t('logo.alt')} className="logo-overlay" />
         {/* Resting state (categories all off by default above) leaves the
             map with nothing plotted -- a blank basemap reads as broken, not
             "nothing selected", so this fills that gap. Keyed on there being
@@ -719,9 +996,11 @@ function App() {
         {visibleEmployers.length === 0 && visibleTrainingProviders.length === 0 && (
           <div className="map-empty-state">
             <div className="map-empty-state-card">
-              <p className="map-empty-state-title">Select a job or training provider</p>
+              <p className="map-empty-state-title">
+                {searching ? t('empty.noMatchTitle') : t('empty.title')}
+              </p>
               <p className="map-empty-state-hint">
-                Turn on a category or area below to see jobs and training providers here.
+                {searching ? t('empty.noMatchHint') : t('empty.hint')}
               </p>
             </div>
           </div>
@@ -758,42 +1037,40 @@ function App() {
           />
           <FlyToTarget target={selected} active={mapActive} />
           <TransitLayer data={transitData} shownAgencies={shownAgencies} isMobile={isMobile} />
-          {visibleEmployers.map((feature, i) => {
+          {/* Keyed by name, not list position: with a popup attached, a
+              position key would hand one employer's open popup to whichever
+              employer slid into that slot when a filter changed. */}
+          {visibleEmployers.map(feature => {
             const [lng, lat] = feature.geometry.coordinates
-            const { company, full_address, category, sub_category, open_job_count } = feature.properties
+            const { company } = feature.properties
             return (
               <EmployerMarker
-                key={i}
+                key={company}
                 lat={lat}
                 lng={lng}
-                company={company}
-                full_address={full_address}
-                category={category}
-                sub_category={sub_category}
-                open_job_count={open_job_count}
+                properties={feature.properties}
                 zone={zoneOf(feature.properties)}
                 education={educationOf(feature.properties)}
                 isActive={selected?.kind === 'employer' && selected?.id === company}
                 isMobile={isMobile}
+                mapActive={mapActive}
                 onSelect={() => handleSelect(feature)}
+                onShowInList={() => handleShowInList(feature)}
               />
             )
           })}
-          {visibleTrainingProviders.map((feature, i) => {
+          {visibleTrainingProviders.map(feature => {
             const [lng, lat] = feature.geometry.coordinates
-            const { provider, address, category, credential_focus, cost_notes } = feature.properties
+            const { provider } = feature.properties
             return (
               <TrainingMarker
-                key={`training-${i}`}
+                key={`training-${provider}`}
                 lat={lat}
                 lng={lng}
-                provider={provider}
-                address={address}
-                category={category}
-                credential_focus={credential_focus}
-                cost_notes={cost_notes}
+                properties={feature.properties}
                 isActive={selected?.kind === 'training' && selected?.id === provider}
                 isMobile={isMobile}
+                mapActive={mapActive}
                 onSelect={() => handleSelectTraining(feature)}
               />
             )
@@ -802,16 +1079,34 @@ function App() {
       </div>
 
       <div className={`sidebar${isMobile && viewMode !== 'list' ? ' hidden-mobile' : ''}`}>
+        {!isMobile && (
+          <div className="sidebar-language">
+            <LanguageToggle />
+          </div>
+        )}
         <div className="sidebar-header">
           <FeedbackButton />
-          <h2>Employers</h2>
+          <h2>{t('header.employers')}</h2>
           <p>
-            {visibleEmployers.length} location{visibleEmployers.length !== 1 ? 's' : ''}
+            {t('header.locations', { count: visibleEmployers.length })}
             {swVisible !== visibleEmployers.length && (
-              <span className="corridor-count"> · {swVisible} in Southwest Detroit</span>
+              <span className="corridor-count"> · {t('header.inSouthwest', { count: swVisible })}</span>
             )}
           </p>
+          {lastUpdated && <p className="updated-line">{t('header.updated', { date: lastUpdated })}</p>}
         </div>
+        <SearchBox
+          query={searchInput}
+          onQueryChange={setSearchInput}
+          searching={searching}
+          employerCount={visibleEmployers.length}
+          trainingCount={visibleTrainingProviders.length}
+        />
+        <HiringFilter
+          hiringOnly={hiringOnly}
+          onToggle={() => setHiringOnly(on => !on)}
+          hiringCount={hiringCount}
+        />
         <ZipFilter
           zip={zipInput}
           onZipChange={setZipInput}
@@ -846,9 +1141,9 @@ function App() {
             >
               <h2>
                 <span className={`chevron${trainingListOpen ? ' open' : ''}`}>&#9656;</span>
-                Training Providers
+                {t('training.title')}
               </h2>
-              <p>{visibleTrainingProviders.length} location{visibleTrainingProviders.length !== 1 ? 's' : ''}</p>
+              <p>{t('header.locations', { count: visibleTrainingProviders.length })}</p>
             </button>
             {trainingListOpen && (
             <div className="employer-list training-list">
@@ -869,19 +1164,19 @@ function App() {
                   >
                     <div className="company-name">{provider}</div>
                     {zone !== 'Southwest Detroit' && (
-                      <div className={`scope-tag ${zoneClass(zone)}`} title={ZONE_META[zone].hint}>
-                        {zone}
+                      <div className={`scope-tag ${zoneClass(zone)}`} title={hint(zone)}>
+                        {label(zone)}
                       </div>
                     )}
                     <div className="category-line">
                       <span className="category-swatch training-swatch" style={{ backgroundColor: TRAINING_PROVIDER_COLOR }} />
-                      {category}
+                      {label(category)}
                     </div>
                     {address && <div className="sub-category-line">{address}</div>}
                     {credential_focus && (
-                      <div className="credential-tags-line">{credential_focus}</div>
+                      <div className="credential-tags-line">{phrases(spaceCommas(credential_focus))}</div>
                     )}
-                    {cost_notes && <div className="cost-notes-line">{cost_notes}</div>}
+                    {cost_notes && <div className="cost-notes-line">{label(cost_notes)}</div>}
                     {link && (
                       <a
                         href={link}
@@ -890,7 +1185,7 @@ function App() {
                         className="job-apply-link"
                         onClick={e => e.stopPropagation()}
                       >
-                        Programme page&nbsp;&#8599;
+                        {t('training.programmePage')}&nbsp;&#8599;
                       </a>
                     )}
                   </div>
@@ -914,10 +1209,21 @@ function App() {
             // with job_titles/apply_urls (guaranteed by apply_education_to_map.py
             // building all four from one pass), so dropping empty titles here
             // would shift every array out of sync with the one before it.
-            const titles = job_titles ? job_titles.split(' | ') : []
-            const urls = apply_urls ? apply_urls.split(' | ') : []
-            const educations = job_educations ? job_educations.split(' | ') : []
-            const descriptions = job_descriptions ? job_descriptions.split(' | ') : []
+            const titles = splitList(job_titles)
+            const urls = splitList(apply_urls)
+            const educations = splitList(job_educations)
+            const descriptions = splitList(job_descriptions)
+            // Which openings to list: all of them once the card is selected;
+            // before that, only the ones a search matched by title, so a
+            // search for "welder" shows the welder jobs without a click on
+            // each employer. These are positions in `titles`, never a
+            // filtered copy, for the alignment reason above.
+            const matchedJobs = employerMatches?.get(feature)?.jobIndexes ?? []
+            const shownJobs = isActive ? titles.map((_, j) => j) : matchedJobs
+            const confidence = CONFIDENCE_PATTERN.exec(feature.properties.education_confidence || '')
+            const confidenceText = confidence
+              ? t('jobs.confidence', { percent: confidence[1], ratio: confidence[2] })
+              : (feature.properties.education_confidence || '')
             return (
               <div
                 key={i}
@@ -927,36 +1233,51 @@ function App() {
               >
                 <div className="company-name">{company}</div>
                 {zone !== 'Southwest Detroit' && (
-                  <div className={`scope-tag ${zoneClass(zone)}`} title={ZONE_META[zone].hint}>
-                    {zone}
+                  <div className={`scope-tag ${zoneClass(zone)}`} title={hint(zone)}>
+                    {label(zone)}
                   </div>
                 )}
                 <div className="category-line">
                   <span className="category-swatch" style={{ backgroundColor: colorForCategory(category) }} />
-                  {categoryOf(feature.properties)}
+                  {label(categoryOf(feature.properties))}
                 </div>
-                {sub_category && <div className="sub-category-line">{sub_category}</div>}
+                {sub_category && <div className="sub-category-line">{label(sub_category)}</div>}
                 {activeZipCoords && (
                   <div className="zip-distance-line">
-                    {distanceMiles(activeZipCoords.lat, activeZipCoords.lng, empLat, empLng).toFixed(1)} mi from {zipInput}
+                    {t('zip.distance', {
+                      miles: distanceMiles(activeZipCoords.lat, activeZipCoords.lng, empLat, empLng).toFixed(1),
+                      zip: zipInput,
+                    })}
                   </div>
                 )}
                 <span className={`job-badge${open_job_count === 0 ? ' no-jobs' : ''}`}>
-                  {open_job_count} open job{open_job_count !== 1 ? 's' : ''}
+                  {t('jobs.open', { count: open_job_count })}
                 </span>
                 {educationOf(feature.properties) && (
                   <span
                     className={`edu-badge ${eduClass(educationOf(feature.properties))}`}
-                    title={feature.properties.education_confidence || ''}
+                    title={confidenceText}
                   >
-                    {educationOf(feature.properties)}
+                    {label(educationOf(feature.properties))}
                   </span>
                 )}
-                {isActive && titles.length > 0 && (
+                {!isActive && matchedJobs.length > 0 && (
+                  <div className="search-match-line">
+                    {t('search.matchingJobs', { count: matchedJobs.length })}
+                  </div>
+                )}
+                {/* Empty in English (see 'jobs.languageNote' in strings.js), so
+                    this only appears where the titles below are not in the
+                    language the visitor chose. */}
+                {shownJobs.length > 0 && t('jobs.languageNote') && (
+                  <p className="job-language-note">{t('jobs.languageNote')}</p>
+                )}
+                {shownJobs.length > 0 && (
                   <ul className="job-titles-list">
-                    {titles.map((title, j) => {
+                    {shownJobs.map(j => {
+                      const title = titles[j]
                       const url = urls[j]
-                      const hasRealUrl = url && /^https?:\/\//.test(url)
+                      const hasRealUrl = isWebUrl(url)
                       const tier = educations[j]
                       const description = descriptions[j]
                       // Only jobs fetch_job_descriptions.py actually fetched and
@@ -982,7 +1303,7 @@ function App() {
                             )}
                             <span className="job-title-text">{title}</span>
                             {tier && (
-                              <span className={`job-edu-badge ${eduClass(tier)}`}>{tier}</span>
+                              <span className={`job-edu-badge ${eduClass(tier)}`}>{label(tier)}</span>
                             )}
                             {hasRealUrl && (
                               <a
@@ -990,10 +1311,10 @@ function App() {
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="job-apply-link"
-                                title="Open this posting"
+                                title={t('jobs.applyTitle')}
                                 onClick={e => e.stopPropagation()}
                               >
-                                Apply&nbsp;&#8599;
+                                {t('jobs.apply')}&nbsp;&#8599;
                               </a>
                             )}
                           </div>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useI18n } from './i18n'
 
 // The Google Form's "Send" -> link URL, in its full form:
 //   https://docs.google.com/forms/d/e/<long id>/viewform
@@ -7,6 +8,14 @@ import { useEffect, useState } from 'react'
 // While this is empty the whole feedback UI renders nothing, so the live site
 // never shows a button that opens onto a broken form.
 export const FEEDBACK_FORM_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSdBPjev3aBqlImkuusR67fGTuLN-yGOVBIaNi9IJv2yuZ0img/viewform'
+
+// The Spanish copy of the same form. Google Forms has no per-visitor language
+// switch, so a Spanish form is a second form (Form menu -> Make a copy, then
+// translate the questions). Paste its /viewform URL here. While this is empty,
+// Spanish-language visitors get the English form above rather than no form.
+export const FEEDBACK_FORM_URL_ES = ''
+
+const FORM_URLS = { en: FEEDBACK_FORM_URL, es: FEEDBACK_FORM_URL_ES }
 
 function embedUrl(url) {
   try {
@@ -22,6 +31,8 @@ function embedUrl(url) {
 // than navigating away, so a visitor who was mid-browse doesn't lose their
 // filters and place in the list.
 export default function FeedbackButton() {
+  const { t, lang } = useI18n()
+  const formUrl = FORM_URLS[lang] || FEEDBACK_FORM_URL
   const [open, setOpen] = useState(false)
 
   useEffect(() => {
@@ -31,12 +42,12 @@ export default function FeedbackButton() {
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
 
-  if (!FEEDBACK_FORM_URL) return null
+  if (!formUrl) return null
 
   return (
     <>
       <button type="button" className="feedback-button" onClick={() => setOpen(true)}>
-        Feedback
+        {t('feedback.button')}
       </button>
       {open && (
         <div className="feedback-overlay" onClick={() => setOpen(false)}>
@@ -44,19 +55,19 @@ export default function FeedbackButton() {
             className="feedback-dialog"
             role="dialog"
             aria-modal="true"
-            aria-label="Send feedback"
+            aria-label={t('feedback.title')}
             onClick={e => e.stopPropagation()}
           >
             <div className="feedback-dialog-header">
-              <h2>Send feedback</h2>
-              <a href={FEEDBACK_FORM_URL} target="_blank" rel="noopener noreferrer" className="feedback-open-tab">
-                Open in new tab&nbsp;&#8599;
+              <h2>{t('feedback.title')}</h2>
+              <a href={formUrl} target="_blank" rel="noopener noreferrer" className="feedback-open-tab">
+                {t('feedback.openTab')}&nbsp;&#8599;
               </a>
-              <button type="button" className="feedback-close" onClick={() => setOpen(false)} aria-label="Close">
+              <button type="button" className="feedback-close" onClick={() => setOpen(false)} aria-label={t('feedback.close')}>
                 &times;
               </button>
             </div>
-            <iframe src={embedUrl(FEEDBACK_FORM_URL)} title="Feedback form" className="feedback-frame">
+            <iframe src={embedUrl(formUrl)} title={t('feedback.frameTitle')} className="feedback-frame">
               Loading&hellip;
             </iframe>
           </div>

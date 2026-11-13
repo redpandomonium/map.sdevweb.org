@@ -461,6 +461,203 @@
   margin-bottom: 4px;
 }
 
+/* When the job listings were last refreshed (sidebar header). */
+.sidebar-header .updated-line {
+  margin-top: 4px;
+  font-size: 10px;
+  color: #6b7280;
+}
+
+/* --- Language toggle --------------------------------------------------------
+   Desktop: a slim row above the sidebar header. Mobile: a compact EN/ES pair
+   at the end of the List/Map tab bar (see the mobile block at the bottom). */
+
+.sidebar-language {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 14px;
+  border-bottom: 1px solid #2e303a;
+  flex-shrink: 0;
+}
+
+.language-toggle {
+  display: inline-flex;
+  border: 1px solid #3a3c4a;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.language-toggle button {
+  padding: 4px 10px;
+  background: none;
+  border: none;
+  color: #9ca3af;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.language-toggle button + button {
+  border-left: 1px solid #3a3c4a;
+}
+
+.language-toggle button:hover {
+  color: #f3f4f6;
+}
+
+.language-toggle button:focus-visible {
+  outline: 2px solid #689cca;
+  outline-offset: -2px;
+}
+
+.language-toggle button.active {
+  background: #1e2a3a;
+  color: #9cc4e8;
+}
+
+/* Shown above a job list when the map is not in English -- the titles
+   underneath are the employer's own wording. */
+.job-language-note {
+  margin: 8px 0 0;
+  font-size: 10px;
+  font-style: italic;
+  line-height: 1.4;
+  color: #6b7280;
+}
+
+/* --- Search ---------------------------------------------------------------
+   Reuses the ZIP panel's title/input look (.zip-filter, .zip-input) so the two
+   text boxes read as a pair. */
+
+.search-filter .zip-filter-title {
+  display: block;
+}
+
+.search-input-wrap {
+  position: relative;
+}
+
+.search-input {
+  padding-right: 32px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* The browser's own clear "x" on type=search is replaced by .search-clear,
+   which is styled for the dark panel and big enough to tap. */
+.search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.search-clear {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 32px;
+  background: none;
+  border: none;
+  color: #9ca3af;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.search-clear:hover,
+.search-clear:focus-visible {
+  color: #f3f4f6;
+}
+
+.employer-item .search-match-line {
+  margin-top: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #9cc4e8;
+}
+
+/* --- Hiring toggle + map key ------------------------------------------------ */
+
+.hiring-filter {
+  padding: 6px 12px 10px;
+}
+
+.hiring-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: #d1d5db;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.hiring-toggle:hover {
+  background: #22232e;
+}
+
+.hiring-toggle-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  border: 1px solid #4b5563;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1;
+  color: #0f1014;
+}
+
+.hiring-toggle.active .hiring-toggle-box {
+  background: #66b245;
+  border-color: #66b245;
+}
+
+/* Mirrors HIRING_STYLE in App.jsx: 8px vs 5px radius, the small one faded. */
+.map-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 6px 8px 0;
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+.map-key-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.map-key-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.map-key-dot.hiring {
+  width: 14px;
+  height: 14px;
+}
+
+.map-key-dot.not-hiring {
+  width: 8px;
+  height: 8px;
+  margin: 0 3px;
+  opacity: 0.5;
+}
+
 /* --- Corridor scope filter ------------------------------------------------
    Scope reflects the 12 target ZIP codes. Out-of-corridor employers stay on
    the map, drawn hollow rather than hidden, matching the marker styling. */
@@ -1004,6 +1201,140 @@
   border-right-color: #1a1b22;
 }
 
+/* --- Map popups -------------------------------------------------------------
+   Leaflet's popup is white with dark text by default; this restyles it to the
+   same dark card as the tooltip above. Also applies to the transit route/stop
+   popups on mobile (TransitLayer.jsx), which use the same Leaflet classes. */
+
+.leaflet-popup-content-wrapper {
+  background: #1a1b22;
+  border: 1px solid #2e303a;
+  border-radius: 8px;
+  color: #d1d5db;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.6);
+}
+
+.leaflet-popup-tip {
+  background: #1a1b22;
+  border: 1px solid #2e303a;
+  box-shadow: none;
+}
+
+.leaflet-popup-content {
+  margin: 12px 14px;
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.leaflet-container a.leaflet-popup-close-button {
+  top: 4px;
+  right: 4px;
+  width: 28px;
+  height: 28px;
+  font-size: 20px;
+  line-height: 28px;
+  color: #9ca3af;
+}
+
+.leaflet-container a.leaflet-popup-close-button:hover,
+.leaflet-container a.leaflet-popup-close-button:focus-visible {
+  color: #f3f4f6;
+}
+
+.map-popup-title {
+  padding-right: 22px; /* clear of the close button */
+  font-size: 14px;
+  font-weight: 600;
+  color: #f3f4f6;
+  overflow-wrap: anywhere;
+}
+
+.map-popup-status {
+  display: inline-block;
+  margin: 6px 0 2px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #2e2e2e;
+  color: #9ca3af;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.map-popup-status.hiring {
+  background: #1e3a2e;
+  color: #66b245;
+}
+
+.map-popup-status.training {
+  background: #3a3210;
+  color: #e0b400;
+}
+
+.map-popup-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin: 8px 0 0;
+}
+
+.map-popup-facts dt {
+  color: #6b7280;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-top: 2px;
+}
+
+.map-popup-facts dd {
+  margin: 0;
+  color: #d1d5db;
+  overflow-wrap: anywhere;
+}
+
+.map-popup-facts .category-swatch {
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: baseline;
+}
+
+.map-popup-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.map-popup-button {
+  padding: 6px 12px;
+  background: #1e2a3a;
+  border: 1px solid #689cca;
+  border-radius: 6px;
+  color: #9cc4e8;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.map-popup-button:hover,
+.map-popup-button:focus-visible {
+  background: #26374d;
+  color: #cfe3f5;
+}
+
+.leaflet-container a.map-popup-link {
+  color: #60a5fa;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.leaflet-container a.map-popup-link:hover,
+.leaflet-container a.map-popup-link:focus-visible {
+  color: #93c5fd;
+  text-decoration: underline;
+}
+
 /* =============================================================================
    Mobile (<900px) -- see the breakpoint comment at the top of this file.
    ========================================================================== */
@@ -1066,6 +1397,35 @@
     border-bottom-color: #689cca;
   }
 
+  /* The EN/ES pair at the end of the tab bar. `.mobile-view-toggle button`
+     above would otherwise stretch these two to tab width and give them the
+     tab underline, so each of those is undone here. */
+  .mobile-view-toggle .language-toggle {
+    flex-shrink: 0;
+    align-self: center;
+    margin: 0 8px;
+    background: #1a1b22;
+  }
+
+  .mobile-view-toggle .language-toggle button {
+    flex: none;
+    min-width: 44px;
+    min-height: 36px;
+    padding: 0 10px;
+    border-bottom: none;
+    background: none;
+    font-size: 12px;
+  }
+
+  .mobile-view-toggle .language-toggle button.active {
+    background: #1e2a3a;
+    color: #9cc4e8;
+  }
+
+  .job-language-note {
+    font-size: 11px;
+  }
+
   /* --- Touch targets (44px minimum) ------------------------------------------ */
 
   .filter-section-header {
@@ -1084,6 +1444,42 @@
 
   .zip-radius-btn {
     min-height: 40px;
+  }
+
+  .search-clear {
+    width: 44px;
+  }
+
+  .search-input {
+    padding-right: 44px;
+  }
+
+  .hiring-toggle {
+    min-height: 44px;
+  }
+
+  .map-popup-button {
+    min-height: 40px;
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+
+  .leaflet-container a.map-popup-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    font-size: 13px;
+  }
+
+  .leaflet-container a.leaflet-popup-close-button {
+    width: 40px;
+    height: 40px;
+    line-height: 40px;
+    font-size: 24px;
+  }
+
+  .map-popup-title {
+    padding-right: 30px;
   }
 
   .feedback-button {
@@ -1190,6 +1586,7 @@
 @media (hover: none) {
   .employer-item:active,
   .filter-section-header:active,
+  .hiring-toggle:active,
   .scope-item:active,
   .legend-item:active,
   .job-title-row.expandable:active {
